@@ -29,10 +29,10 @@ public final class ChaChaFe {
     private static final int NONCE_LENGTH_BYTE = 12;
     private static final int SALT_LENGTH_BYTE = 32;
     private static final int BUFFER_SIZE = 16384;
-    private static final int ACTION_INDEX = 1;
-    private static final int PASSWORD_INDEX = 2;
-    private static final int SOURCE_PATH_INDEX = 3;
-    private static final int DESTINATION_INDEX = 4;
+    private static final int ACTION_INDEX = 0;
+    private static final int PASSWORD_INDEX = 1;
+    private static final int SOURCE_PATH_INDEX = 2;
+    private static final int DESTINATION_INDEX = 3;
     private static final int PARAMETER_NUMBER = 4;
     private String action;
     private String password;
