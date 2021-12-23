@@ -1,14 +1,17 @@
 package com.midcielab;
 
+import java.io.BufferedInputStream;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
+import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.security.spec.InvalidKeySpecException;
 import java.security.spec.KeySpec;
+import java.util.Arrays;
 import javax.crypto.Cipher;
 import javax.crypto.CipherOutputStream;
 import javax.crypto.NoSuchPaddingException;
@@ -28,6 +31,7 @@ public final class ChaChaFe {
     private static final int KEY_BIT_LENGTH = 256;
     private static final int NONCE_LENGTH_BYTE = 12;
     private static final int SALT_LENGTH_BYTE = 32;
+    private static final int CHECKSUM_LENGTH_BYTE = 32;
     private static final int BUFFER_SIZE = 16384;
     private static final int ACTION_INDEX = 0;
     private static final int PASSWORD_INDEX = 1;
@@ -58,33 +62,39 @@ public final class ChaChaFe {
             try {
                 this.cipher = Cipher.getInstance("ChaCha20-Poly1305/None/NoPadding");
             } catch (NoSuchAlgorithmException | NoSuchPaddingException e) {
+                System.out.println("Not found ChaCha20 algorithm. Java version needs above than 11.");
                 e.printStackTrace();
             }
         } else {
-            System.out.println("Please check input parameters.");
+            System.out.println("Input parameters should be: e/d password soure_path destnation_path");
         }
     }
 
     /**
      * Process file encryption/decryption.
      */
-    public void process() {
+    public boolean process() {
+        boolean result = false;
         if (this.cipher == null) {
             System.out.println("Nothing happened.");
-            return;
         }
         if ("e".equals(this.action)) {
-            encryption();
+            result = encryption();
         } else if ("d".equals(this.action)) {
-            decryption();
+            result = decryption();
         } else {
             System.out.println("First parameter should be 'e' or 'd'.");
         }
+        if (result) {
+            System.out.println("Process completion. Everything is ok.");
+        } else {
+            System.out.println("Process fail.");
+        }
+        return result;
     }
 
     private SecretKey getKey(String passwd, byte[] salt) throws NoSuchAlgorithmException, InvalidKeySpecException {
         SecretKeyFactory factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
-
         KeySpec spec = new PBEKeySpec(passwd.toCharArray(), salt, KEY_ITERATION, KEY_BIT_LENGTH);
         return new SecretKeySpec(factory.generateSecret(spec).getEncoded(), "ChaCha20");
     }
@@ -103,7 +113,16 @@ public final class ChaChaFe {
         this.cipher.init(mode, key, iv);
     }
 
-    private void encryption() {
+    private boolean encryption() {
+        System.out.println("Encryption start: " + srcFile);
+        byte[] checksum;
+        try {
+            checksum = sha256(srcFile);
+        } catch (IOException | NoSuchAlgorithmException e) {
+            System.out.println("Gather file checksum fail.");
+            e.printStackTrace();
+            return false;
+        }
 
         try (FileInputStream fis = new FileInputStream(srcFile);
                 FileOutputStream fos = new FileOutputStream(destFile);
@@ -112,11 +131,13 @@ public final class ChaChaFe {
             byte[] nonce = getRandomBytes(NONCE_LENGTH_BYTE);
             byte[] salt = getRandomBytes(SALT_LENGTH_BYTE);
 
-            System.out.println("encryption nonce: " + convertBytesToHex(nonce));
-            System.out.println("encryption salt: " + convertBytesToHex(salt));
+            System.out.println("Encryption nonce: " + convertBytesToHex(nonce));
+            System.out.println("Encryption salt: " + convertBytesToHex(salt));
+            System.out.println("Encryption checksum: " + convertBytesToHex(checksum));
 
             fos.write(nonce);
             fos.write(salt);
+            fos.write(checksum);
 
             initCipher(nonce, salt, Cipher.ENCRYPT_MODE);
 
@@ -128,16 +149,20 @@ public final class ChaChaFe {
             cos.flush();
         } catch (IOException | InvalidKeyException | NoSuchAlgorithmException | InvalidKeySpecException
                 | InvalidAlgorithmParameterException e) {
+            System.out.println("Encryption fail.");
             e.printStackTrace();
+            return false;
         }
+        return true;
     }
 
-    private void decryption() {
+    private boolean decryption() {
+        System.out.println("Decryption start: " + srcFile);
+        byte[] checksum = new byte[CHECKSUM_LENGTH_BYTE];
 
         // Don't use CipherInputStream for large file
         // performance is poor due to 512 byte internal buffer
         // private byte[] ibuffer = new byte[512]
-
         try (FileInputStream fis = new FileInputStream(srcFile);
                 // CipherInputStream cis = new CipherInputStream(fis, this.cipher);
                 FileOutputStream fos = new FileOutputStream(destFile);
@@ -148,9 +173,11 @@ public final class ChaChaFe {
 
             fis.read(nonce);
             fis.read(salt);
+            fis.read(checksum);
 
-            System.out.println("decryption nonce: " + convertBytesToHex(nonce));
-            System.out.println("decryption salt: " + convertBytesToHex(salt));
+            System.out.println("Decryption nonce: " + convertBytesToHex(nonce));
+            System.out.println("Decryption salt: " + convertBytesToHex(salt));
+            System.out.println("Decryption checksum: " + convertBytesToHex(checksum));
 
             initCipher(nonce, salt, Cipher.DECRYPT_MODE);
 
@@ -162,9 +189,19 @@ public final class ChaChaFe {
             cos.flush();
         } catch (IOException | InvalidKeyException | NoSuchAlgorithmException | InvalidKeySpecException
                 | InvalidAlgorithmParameterException e) {
+            System.out.println("Decrypt fail.");
             e.printStackTrace();
+            return false;
         }
 
+        try {
+            byte[] decFileChecksum = sha256(destFile);
+            return Arrays.equals(checksum, decFileChecksum);
+        } catch (IOException | NoSuchAlgorithmException e) {
+            System.out.println("Verify checksum fail.");
+            e.printStackTrace();
+            return false;
+        }
     }
 
     private String convertBytesToHex(byte[] bytes) {
@@ -175,11 +212,23 @@ public final class ChaChaFe {
         return result.toString();
     }
 
+    private byte[] sha256(String digestFile) throws IOException, NoSuchAlgorithmException {
+        byte[] buffer = new byte[BUFFER_SIZE];
+        int count;
+        MessageDigest md = MessageDigest.getInstance("SHA-256");
+        BufferedInputStream bis = new BufferedInputStream(new FileInputStream(digestFile));
+        while ((count = bis.read(buffer)) > 0) {
+            md.update(buffer, 0, count);
+        }
+        bis.close();
+        return md.digest();
+    }
+
     /** Main. */
     public static void main(String[] args) {
         long start = System.currentTimeMillis();
         new ChaChaFe(args).process();
         long end = System.currentTimeMillis();
-        System.out.println("Process with " + (end - start) + " miniseconds.");
+        System.out.println("Process with " + (end - start) + " ms.");
     }
 }
